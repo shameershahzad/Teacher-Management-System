@@ -1,0 +1,60 @@
+.navDiv{
+   background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  height: 60px;
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+}
+
+.pagesDiv{
+   height: 100%;                 /* Full height of navbar */
+  width: 100%;               
+  display: flex;
+  justify-content: space-evenly;  /* Even horizontal spacing */
+  align-items: center;            /* Vertical center */
+  font-size: 18px;
+  margin: 0 auto; 
+  margin-left: 70px;
+}
+
+.pagesDiv a{
+  color:white;
+  text-decoration: none;
+}
+
+.buttonDiv{
+  height:30px;
+  width:200px;
+  margin-left: 5%;
+}
+
+.signUpBtn{
+  height: 40px;
+  width: 100px;
+  background-color: #4e54c8; 
+  color: white;
+  font-weight: bold;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.3s ease, transform 0.2s ease;
+}
+
+.signUpBtn:hover {
+  background-color: #3c42a8; 
+  transform: scale(1.05);
+}
+
+.nav-link{
+  color:rgb(236, 236, 236);
+  border: none;
+  outline: none;
+}
+
+.nav-link.active {
+   color: hsl(0, 0%, 100%);
+   font-weight:900;
+   border: none;
+   outline: none;
+}
