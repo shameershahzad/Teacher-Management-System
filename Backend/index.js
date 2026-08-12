@@ -8,7 +8,31 @@ const timetableRoutes = require("./routes/timetableRoutes")
 const attendanceRoutes = require("./routes/attendanceRoutes")
 connectDB();
 
+const studentRoutes = require("./routes/studentRoutes")
+const timetableRoutes = require("./routes/timetableRoutes")
+const attendanceRoutes = require("./routes/attendanceRoutes")
+const csrf = require('csurf');
+connectDB();
+
 const app = express();      
+app.use(express.json());
+app.use(cors());    
+app.use(csrf);
+
+app.use("/register", registerRoutes)
+app.use("/class", classRoutes)
+const timetableRoutes = require("./routes/timetableRoutes")
+const attendanceRoutes = require("./routes/attendanceRoutes")
+const csurf = require('csurf');
+connectDB();
+
+const app = express();      
+app.use(express.json());
+app.use(cors());    
+app.use(csurf());
+
+app.use("/register", registerRoutes)
+app.use("/class", classRoutes)
 app.use(express.json());
 app.use(cors());    
 
