@@ -13,13 +13,24 @@ jobs:
       - name: Check for placeholder commands
         shell: powershell
         run: |
-          # CHANGED: now scans the whole file for the "REPLACE ME"
-          # marker instead of only the build_test_lint job section —
-          # that job was split into build/test_lint below, so a single
-          # fixed marker name would've gone stale. Still fails the
-          # same way, just no longer tied to one job's exact name.
+          # FIXED: scanning the WHOLE file for "REPLACE ME" was a bug —
+          # this very script's own source (and this comment) contains
+          # the literal string "REPLACE ME", so a whole-file scan
+          # always matched itself and failed every run regardless of
+          # the real build/test commands below. Back to scoping the
+          # search to the section AFTER this job — from the `build:`
+          # marker onward — same fix as the original single-job
+          # version, just re-pointed at the new job name since build
+          # was split into build/test_lint.
           $content = Get-Content .github/workflows/ci-workflow-template.yml -Raw
-          if ($content -match "REPLACE ME") {
+          $marker = "`n  build:"
+          $index = $content.IndexOf($marker)
+          if ($index -lt 0) {
+            Write-Host "::error::Could not find the build job in ci-workflow-template.yml."
+            exit 1
+          }
+          $section = $content.Substring($index)
+          if ($section -match "REPLACE ME") {
             Write-Host "::error::This workflow still has placeholder build/test/lint commands. A DevOps engineer must replace them (in .github/workflows/ci-workflow-template.yml) before this pipeline can run."
             exit 1
           }
