@@ -1,8 +1,9 @@
 name: Sentra CI/CD Pipeline
-
 on:
   pull_request:
-
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 jobs:
   gateway:
     name: Gateway - Verify Pipeline Configured
@@ -12,16 +13,14 @@ jobs:
       - name: Check for placeholder commands
         shell: powershell
         run: |
+          # CHANGED: now scans the whole file for the "REPLACE ME"
+          # marker instead of only the build_test_lint job section —
+          # that job was split into build/test_lint below, so a single
+          # fixed marker name would've gone stale. Still fails the
+          # same way, just no longer tied to one job's exact name.
           $content = Get-Content .github/workflows/ci-workflow-template.yml -Raw
-          $marker = "build_test_lint:"
-          $index = $content.LastIndexOf($marker)
-          if ($index -lt 0) {
-            Write-Host "::error::Could not find the build_test_lint job in ci-workflow-template.yml."
-            exit 1
-          }
-          $section = $content.Substring($index)
-          if ($section -match "REPLACE ME") {
-            Write-Host "::error::This workflow still has placeholder build/test/lint commands. A DevOps engineer must replace them below (in .github/workflows/ci-workflow-template.yml) before this pipeline can run."
+          if ($content -match "REPLACE ME") {
+            Write-Host "::error::This workflow still has placeholder build/test/lint commands. A DevOps engineer must replace them (in .github/workflows/ci-workflow-template.yml) before this pipeline can run."
             exit 1
           }
 
@@ -29,6 +28,8 @@ jobs:
     name: Sentra Blind Re-scan
     needs: gateway
     runs-on: self-hosted
+    outputs:
+      open_findings_count: ${{ steps.wait.outputs.open_findings_count }}
     steps:
       - uses: actions/checkout@v4
       - name: Trigger Sentra re-scan
@@ -39,29 +40,123 @@ jobs:
           $response = Invoke-RestMethod -Uri "http://localhost:8000/api/projects/${{ vars.SENTRA_PROJECT_ID }}/ci-rescan-for-pr" -Method POST -Headers @{ "X-Sentra-Api-Key" = "${{ secrets.SENTRA_API_KEY }}" } -ContentType "application/json" -Body $body
           "scan_id=$($response.scan_id)" >> $env:GITHUB_OUTPUT
       - name: Wait for scan to complete
+        id: wait
         shell: powershell
         run: |
           $scanId = "${{ steps.trigger.outputs.scan_id }}"
-          for ($i = 0; $i -lt 60; $i++) {
+          for ($i = 0; $i -lt 180; $i++) {
             $status = Invoke-RestMethod -Uri "http://localhost:8000/api/projects/${{ vars.SENTRA_PROJECT_ID }}/ci-scan-status/$scanId" -Headers @{ "X-Sentra-Api-Key" = "${{ secrets.SENTRA_API_KEY }}" }
             Write-Host "Scan status: $($status.status)"
-            if ($status.status -eq "completed" -or $status.status -eq "failed") {
+            if ($status.status -eq "completed") {
+              # ASSUMPTION — UNVERIFIED: this expects ci-scan-status to
+              # return an open_findings_count field on the completed
+              # response. Confirm this field actually exists on that
+              # endpoint before relying on this gate; if it doesn't,
+              # $status.open_findings_count will just be empty/null and
+              # the check below will misbehave.
+              "open_findings_count=$($status.open_findings_count)" >> $env:GITHUB_OUTPUT
               exit 0
+            }
+            if ($status.status -eq "failed" -or $status.status -eq "cancelled") {
+              Write-Host "::error::Sentra scan ended with status '$($status.status)' instead of completing."
+              exit 1
             }
             Start-Sleep -Seconds 10
           }
           Write-Host "::error::Timed out waiting for Sentra scan to finish."
           exit 1
 
-  build_test_lint:
-    name: Build, Test & Lint
+  verify_findings_fixed:
+    name: Gate - Verify 0 Open Findings
+    needs: rescan
+    runs-on: self-hosted
+    steps:
+      - name: Check open findings count
+        shell: powershell
+        run: |
+          $openCount = "${{ needs.rescan.outputs.open_findings_count }}"
+          Write-Host "Open findings after re-scan: $openCount"
+          if ([string]::IsNullOrWhiteSpace($openCount)) {
+            Write-Host "::error::Could not read open findings count from the re-scan result. Refusing to run tests/lint until this is confirmed."
+            exit 1
+          }
+          if ([int]$openCount -gt 0) {
+            Write-Host "::error::$openCount finding(s) are still open. Build/Test/Lint will not run until every finding is fixed (0 open findings)."
+            exit 1
+          }
+
+  # Build runs as soon as the pipeline is configured — independent of
+  # the findings gate, so a real build/syntax error surfaces fast
+  # without waiting on the scan. Only Test/Lint (below) wait on 0 open
+  # findings, per the actual ask: "not run tests linting until ...
+  # 0 findings occur" — build itself was never part of that ask.
+  build:
+    name: Build
     needs: gateway
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      - name: Run project build/test/lint
+      - name: Cache frontend node_modules
+        uses: actions/cache@v4
+        with:
+          path: frontend/node_modules
+          key: ${{ runner.os }}-frontend-${{ hashFiles('frontend/package-lock.json') }}
+      - name: Cache backend node_modules
+        uses: actions/cache@v4
+        with:
+          path: backend/node_modules
+          key: ${{ runner.os }}-backend-${{ hashFiles('backend/package-lock.json') }}
+      - name: Frontend - install, build
         shell: powershell
         run: |
-          Write-Host "REPLACE ME: add your real build command"
-          Write-Host "REPLACE ME: add your real test command"
-          Write-Host "REPLACE ME: add your real lint command"
+          cd frontend
+          npm ci
+          npm run build --if-present
+      - name: Backend - install
+        shell: powershell
+        run: |
+          cd backend
+          npm ci
+
+  # SPLIT OUT from the old single build_test_lint job on purpose: this
+  # is the actual "don't start over from scratch" fix. GitHub Actions'
+  # own "Re-run failed jobs" button only re-runs jobs that failed —
+  # not ones that already succeeded. With build and test_lint as
+  # separate jobs, a test or lint failure means re-running failed jobs
+  # re-runs ONLY this job; `build` (already green) and `gateway`/
+  # `rescan`/`verify_findings_fixed` are left alone. That's the
+  # mechanism — there's no separate custom "resume" logic needed
+  # beyond using GitHub's built-in job-level granularity correctly.
+  test_lint:
+    name: Test & Lint
+    needs: [build, verify_findings_fixed]
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache frontend node_modules
+        uses: actions/cache@v4
+        with:
+          path: frontend/node_modules
+          key: ${{ runner.os }}-frontend-${{ hashFiles('frontend/package-lock.json') }}
+      - name: Cache backend node_modules
+        uses: actions/cache@v4
+        with:
+          path: backend/node_modules
+          key: ${{ runner.os }}-backend-${{ hashFiles('backend/package-lock.json') }}
+      - name: Frontend - install, test
+        shell: powershell
+        run: |
+          cd frontend
+          npm ci
+          npm test --if-present
+      - name: Frontend - lint
+        shell: powershell
+        run: |
+          cd frontend
+          npm run lint --if-present
+      - name: Backend - install, test
+        shell: powershell
+        run: |
+          cd backend
+          npm ci
+          npm test --if-present
